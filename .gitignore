@@ -5,6 +5,7 @@ __pycache__/
 # Ignore virtual environments
 venv/
 .env
+venv
 
 # Ignore test files
 test_*.py
