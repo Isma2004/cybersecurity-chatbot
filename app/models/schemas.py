@@ -39,10 +39,18 @@ class DocumentResponse(BaseModel):
     message: str
 
 class ChatRequest(BaseModel):
-    message: str
+    """Chat request - using 'message' for compatibility with working version"""
+    message: str  # Changed from 'question' to 'message' for compatibility
+    context: Optional[str] = None  # Keep for backward compatibility
     document_ids: Optional[List[str]] = None
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.7
+    
+    # Support both 'message' and 'question' for flexibility
+    @property
+    def question(self) -> str:
+        """Alias for message to support both interfaces"""
+        return self.message
 
 class SourceReference(BaseModel):
     document_id: str
@@ -63,3 +71,44 @@ class HealthCheck(BaseModel):
     timestamp: datetime
     version: str
     models_loaded: Dict[str, bool]
+
+
+class ChatSession(BaseModel):
+    """Chat session model"""
+    id: str
+    title: str
+    created_at: datetime
+    updated_at: datetime
+    message_count: int = 0
+    preview: Optional[str] = None  # First user message preview
+
+class ChatMessage(BaseModel):
+    """Chat message model"""
+    id: str
+    session_id: str
+    type: str  # 'user' or 'assistant'
+    content: str
+    timestamp: datetime
+    sources: List[SourceReference] = []
+    tokens_used: Optional[int] = None
+    processing_time: Optional[float] = None
+
+class CreateChatRequest(BaseModel):
+    """Request to create a new chat"""
+    title: Optional[str] = None
+
+class ChatMessageRequest(BaseModel):
+    """Request to send a message to a chat"""
+    message: str
+    max_tokens: Optional[int] = 512
+    temperature: Optional[float] = 0.7
+
+class ChatSessionResponse(BaseModel):
+    """Response with chat session and messages"""
+    session: ChatSession
+    messages: List[ChatMessage]
+
+class ChatListResponse(BaseModel):
+    """Response with list of chat sessions"""
+    sessions: List[ChatSession]
+    total: int

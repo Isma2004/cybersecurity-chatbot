@@ -1,0 +1,16 @@
+# Ignore Python cache and compiled files
+__pycache__/
+*.pyc
+
+# Ignore virtual environments
+venv/
+.env
+
+# Ignore test files
+test_*.py
+
+# Ignore init files if you don't want them (optional, but usually you keep them)
+__init__.py
+
+# Ignore OS files
+.DS_Store

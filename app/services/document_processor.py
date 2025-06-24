@@ -1,7 +1,7 @@
 import os
 import uuid
 import logging
-import pymupdf
+import fitz
 import docx
 from PIL import Image
 from pathlib import Path
@@ -100,7 +100,7 @@ class FrenchDocumentProcessor:
     def extract_pdf_text(self, file_path: str) -> str:
         """Extract text from PDF file"""
         try:
-            doc = pymupdf.open(file_path)
+            doc = fitz.open(file_path)
             text_content = []
             
             for page_num in range(len(doc)):

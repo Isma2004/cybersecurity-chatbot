@@ -1,11 +1,22 @@
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import logging
+from datetime import datetime
 
-from app.routers import upload, documents, chat  # Make sure chat is imported
+# Import routers
+from app.routers import upload, documents, chat, chat_sessions 
+# Import services
 from app.services.document_processor import document_processor
 from app.services.vector_service import vector_service
-from app.services.chat_service import chat_service  # Make sure chat_service is imported
+from app.services.chat_service import chat_service
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -47,31 +58,42 @@ async def lifespan(app: FastAPI):
     print("🔥 Shutting down...")
 
 app = FastAPI(
-    title="Cybersecurity Chatbot API",
-    description="French RAG chatbot for cybersecurity documents",
+    title="CyberSense API - French Cybersecurity Assistant",
+    description="API for French cybersecurity AI assistant with RAG capabilities",
     version="1.0.0",
+    docs_url="/api/docs",
+    redoc_url="/api/redoc",
     lifespan=lifespan
 )
 
 # Configure CORS
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3000", "http://127.0.0.1:3000"],
+    allow_origins=[
+        "http://localhost:3000", 
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001"
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers - MAKE SURE CHAT IS INCLUDED
+# Include routers with proper prefixes
 app.include_router(upload.router, prefix="/api", tags=["upload"])
 app.include_router(documents.router, prefix="/api", tags=["documents"])
-app.include_router(chat.router, prefix="/api", tags=["chat"])  # This must be here
+app.include_router(chat.router, prefix="/api", tags=["chat"])
+app.include_router(chat_sessions.router, prefix="/api", tags=["chat-sessions"])
 
-@app.get("/")
+@app.get("/", tags=["System"])
 async def root():
+    """Root endpoint"""
     return {
-        "message": "Cybersecurity Chatbot API", 
+        "message": "CyberSense API - French Cybersecurity Assistant", 
         "status": "running",
+        "version": "1.0.0",
+        "docs": "/api/docs",
         "services": {
             "document_processor": _check_service_status(document_processor),
             "vector_service": _check_service_status(vector_service),
@@ -79,16 +101,55 @@ async def root():
         }
     }
 
-@app.get("/health")
+@app.get("/health", tags=["System"])
+@app.get("/api/health", tags=["System"])
 async def health_check():
-    return {
-        "status": "healthy",
-        "services": {
-            "document_processor": _check_service_status(document_processor),
-            "vector_service": _check_service_status(vector_service),
-            "chat_service": _check_service_status(chat_service)
+    """Health check endpoint"""
+    try:
+        # Get detailed service status
+        services = {}
+        
+        # Document processor status
+        try:
+            services["document_processor"] = {
+                "status": "ready" if _check_service_status(document_processor) else "error",
+                "ocr_initialized": getattr(document_processor, 'get_ocr_status', lambda: False)()
+            }
+        except Exception as e:
+            services["document_processor"] = {"status": "error", "error": str(e)}
+        
+        # Vector service status
+        try:
+            vector_stats = vector_service.get_stats()
+            services["vector_service"] = {
+                "status": vector_stats.get("status", "unknown"),
+                "total_vectors": vector_stats.get("total_vectors", 0),
+                "total_documents": vector_stats.get("total_documents", 0)
+            }
+        except Exception as e:
+            services["vector_service"] = {"status": "error", "error": str(e)}
+        
+        # Chat service status
+        try:
+            chat_status = chat_service.get_model_status()
+            services["chat_service"] = chat_status
+        except Exception as e:
+            services["chat_service"] = {"status": "error", "error": str(e)}
+        
+        return {
+            "status": "healthy",
+            "timestamp": datetime.now().isoformat(),
+            "version": "1.0.0",
+            "services": services
         }
-    }
+        
+    except Exception as e:
+        logger.error(f"Health check error: {e}")
+        return {
+            "status": "unhealthy",
+            "timestamp": datetime.now().isoformat(),
+            "error": str(e)
+        }
 
 def _check_service_status(service):
     """Helper function to check service status safely"""
@@ -102,4 +163,14 @@ def _check_service_status(service):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000)
+    
+    logger.info("Starting CyberSense API...")
+    logger.info("French Cybersecurity Document Assistant")
+    
+    uvicorn.run(
+        app, 
+        host="0.0.0.0", 
+        port=8000,
+        reload=True,
+        log_level="info"
+    )

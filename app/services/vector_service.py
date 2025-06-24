@@ -1,198 +1,178 @@
+# app/services/vector_service.py
 import os
 import pickle
 import logging
 import numpy as np
-import faiss
-from typing import List, Tuple, Dict, Any, Optional
+from typing import List, Dict, Any, Optional
 from pathlib import Path
-import psutil
 
 from app.models.schemas import DocumentChunk, SourceReference
-from app.services.embedding_service import embedding_service
-from app.utils.config import settings
 
 logger = logging.getLogger(__name__)
 
-class FAISSVectorService:
+class CloudVectorService:
+    """Lightweight vector service using cloud embeddings and simple similarity"""
+    
     def __init__(self):
-        print(f"🔍 Memory before vector service init: {psutil.virtual_memory().used / (1024**3):.1f} GB")
-        # ... existing code ...
-        print(f"🔍 Memory after vector service init: {psutil.virtual_memory().used / (1024**3):.1f} GB")
+        print("🚀 Creating cloud vector service...")
+        
+        # Initialize storage
+        self.document_store = {}  # chunk_id -> DocumentChunk
+        self.embeddings_store = {}  # chunk_id -> numpy array
+        self.embedding_dimension = None  # Will be set dynamically
+        
+        # Storage paths
+        self.metadata_path = "cloud_vectors.pkl"
+        
+        # Load existing data
+        self._load_existing_data()
+        
+        print("✅ Cloud vector service ready!")
     
-    def _initialize_embeddings(self):
-        """Initialize embedding model with memory optimization"""
+    def _get_embedding_service(self):
+        """Get embedding service (lazy import to avoid circular dependency)"""
         try:
-            print("🧮 Loading embedding model...")
-            print(f"💾 Memory before embedding model: {psutil.virtual_memory().used / (1024**3):.1f} GB")
-            
-            # Use a smaller, more memory-efficient model
-            from sentence_transformers import SentenceTransformer
-            
-            # Try smaller models first
-            model_options = [
-                "all-MiniLM-L6-v2",  # ~90MB, 384 dimensions
-                "paraphrase-MiniLM-L3-v2",  # ~61MB, 384 dimensions
-                "all-distilroberta-v1"  # ~290MB, 768 dimensions
-            ]
-            
-            for model_name in model_options:
-                try:
-                    print(f"🔄 Trying model: {model_name}")
-                    self.embedding_model = SentenceTransformer(model_name)
-                    print(f"✅ Successfully loaded: {model_name}")
-                    print(f"💾 Memory after loading {model_name}: {psutil.virtual_memory().used / (1024**3):.1f} GB")
-                    break
-                except Exception as e:
-                    print(f"❌ Failed to load {model_name}: {e}")
-                    continue
-            
-            if not hasattr(self, 'embedding_model'):
-                raise Exception("Failed to load any embedding model")
-                
-        except Exception as e:
-            print(f"❌ Error initializing embeddings: {e}")
-            raise
+            from app.services.embedding_service import embedding_service
+            return embedding_service
+        except ImportError:
+            print("⚠️ Embedding service not available")
+            return None
     
-    def _create_new_index(self):
-        """Create a new FAISS index optimized for medium-scale document collections"""
+    def _load_existing_data(self):
+        """Load existing vectors and metadata"""
         try:
-            # For small/medium datasets: use exact search (IndexFlatL2)
-            # This gives perfect accuracy for our use case
-            self.index = faiss.IndexFlatL2(self.embedding_dimension)
-            
-            # Wrap with ID map to track document chunk IDs
-            self.index = faiss.IndexIDMap(self.index)
-            
-            print(f"🎯 Created FAISS IndexFlatL2 with dimension {self.embedding_dimension}")
-            
+            if os.path.exists(self.metadata_path):
+                with open(self.metadata_path, 'rb') as f:
+                    data = pickle.load(f)
+                    self.document_store = data.get('documents', {})
+                    self.embeddings_store = data.get('embeddings', {})
+                    self.embedding_dimension = data.get('embedding_dimension')
+                    
+                print(f"📂 Loaded {len(self.document_store)} existing chunks")
+                if self.embedding_dimension:
+                    print(f"📐 Embedding dimension: {self.embedding_dimension}")
         except Exception as e:
-            print(f"❌ Error creating FAISS index: {str(e)}")
-            raise
+            print(f"⚠️ Could not load existing data: {e}")
     
-    def _load_existing_index(self) -> bool:
-        """Load existing FAISS index and metadata"""
-        try:
-            if not os.path.exists(self.index_path) or not os.path.exists(self.metadata_path):
-                return False
-            
-            # Load FAISS index
-            self.index = faiss.read_index(self.index_path)
-            
-            # Load document metadata
-            with open(self.metadata_path, 'rb') as f:
-                self.document_store = pickle.load(f)
-            
-            print(f"📂 Loaded {self.index.ntotal} vectors from existing index")
-            return True
-            
-        except Exception as e:
-            print(f"⚠️ Error loading existing index: {str(e)}")
-            return False
-    
-    def _save_index(self):
-        """Save FAISS index and metadata to disk"""
+    def _save_data(self):
+        """Save vectors and metadata to disk"""
         try:
             # Ensure directory exists
-            Path(self.index_path).parent.mkdir(parents=True, exist_ok=True)
+            Path(self.metadata_path).parent.mkdir(parents=True, exist_ok=True)
             
-            # Save FAISS index
-            faiss.write_index(self.index, self.index_path)
+            data = {
+                'documents': self.document_store,
+                'embeddings': self.embeddings_store,
+                'embedding_dimension': self.embedding_dimension
+            }
             
-            # Save document metadata
             with open(self.metadata_path, 'wb') as f:
-                pickle.dump(self.document_store, f)
-            
-            print(f"💾 Saved index with {self.index.ntotal} vectors")
+                pickle.dump(data, f)
+                
+            print(f"💾 Saved {len(self.document_store)} chunks to disk")
             
         except Exception as e:
-            print(f"❌ Error saving index: {str(e)}")
+            print(f"❌ Error saving data: {e}")
     
     def add_document_chunks(self, chunks: List[DocumentChunk]) -> bool:
-        """Add document chunks to the vector database"""
+        """Add document chunks using cloud embeddings"""
         try:
             if not chunks:
                 return True
             
-            print(f"➕ Adding {len(chunks)} chunks to vector database...")
+            print(f"➕ Adding {len(chunks)} chunks to cloud vector database...")
             
-            # Generate embeddings for all chunks
-            chunk_texts = [chunk.content for chunk in chunks]
-            embeddings = []
+            # Get embedding service
+            embedding_service = self._get_embedding_service()
+            if not embedding_service:
+                print("❌ Embedding service not available")
+                return False
             
-            for i, text in enumerate(chunk_texts):
-                embedding = embedding_service.embed_text(text)
-                embeddings.append(embedding)
-                if (i + 1) % 10 == 0:
-                    print(f"   📝 Processed {i + 1}/{len(chunk_texts)} chunks")
+            # Process chunks
+            successful_chunks = 0
             
-            embeddings_array = np.array(embeddings, dtype=np.float32)
-            
-            # Generate unique IDs for each chunk
-            chunk_ids = []
-            for chunk in chunks:
-                # Use hash of chunk_id to create unique integer ID
-                chunk_id = hash(chunk.chunk_id) % (2**31)  # Keep it positive 32-bit int
-                chunk_ids.append(chunk_id)
-                
-                # Store chunk in document store
-                self.document_store[chunk_id] = chunk
-            
-            chunk_ids_array = np.array(chunk_ids, dtype=np.int64)
-            
-            # Add to FAISS index
-            self.index.add_with_ids(embeddings_array, chunk_ids_array)
+            for i, chunk in enumerate(chunks):
+                try:
+                    # Generate embedding using cloud service
+                    embedding = embedding_service.embed_text(chunk.content)
+                    
+                    # Set dimension from first embedding
+                    if self.embedding_dimension is None:
+                        self.embedding_dimension = len(embedding)
+                        print(f"📐 Set embedding dimension: {self.embedding_dimension}")
+                    
+                    # Generate unique chunk ID
+                    chunk_id = hash(chunk.chunk_id) % (2**31)  # Positive 32-bit int
+                    
+                    # Store chunk and embedding
+                    self.document_store[chunk_id] = chunk
+                    self.embeddings_store[chunk_id] = embedding
+                    
+                    successful_chunks += 1
+                    
+                    if (i + 1) % 10 == 0:
+                        print(f"   📝 Processed {i + 1}/{len(chunks)} chunks")
+                        
+                except Exception as e:
+                    print(f"⚠️ Error processing chunk {i}: {e}")
+                    continue
             
             # Save to disk
-            self._save_index()
+            self._save_data()
             
-            print(f"✅ Successfully added {len(chunks)} chunks to vector database")
-            print(f"📊 Total vectors in database: {self.index.ntotal}")
+            print(f"✅ Successfully added {successful_chunks}/{len(chunks)} chunks")
+            print(f"📊 Total chunks in database: {len(self.document_store)}")
             
-            return True
+            return successful_chunks > 0
             
         except Exception as e:
-            print(f"❌ Error adding chunks to vector database: {str(e)}")
+            print(f"❌ Error adding chunks: {str(e)}")
             return False
     
     def search_similar_chunks(self, query: str, top_k: int = 3) -> List[SourceReference]:
-        """Search for similar chunks using the query"""
+        """Search for similar chunks using cloud embeddings"""
         try:
-            if self.index.ntotal == 0:
+            if not self.document_store:
                 print("⚠️ No documents in vector database yet")
                 return []
             
             print(f"🔍 Searching for: '{query[:50]}...'")
             
+            # Get embedding service
+            embedding_service = self._get_embedding_service()
+            if not embedding_service:
+                print("❌ Embedding service not available")
+                return []
+            
             # Generate query embedding
             query_embedding = embedding_service.embed_query(query)
-            query_vector = np.array([query_embedding], dtype=np.float32)
             
-            # Search in FAISS
-            similarities, indices = self.index.search(query_vector, min(top_k, self.index.ntotal))
+            # Calculate similarities
+            similarities = []
             
-            # Convert results to SourceReference objects
+            for chunk_id, chunk in self.document_store.items():
+                if chunk_id in self.embeddings_store:
+                    chunk_embedding = self.embeddings_store[chunk_id]
+                    
+                    # Cosine similarity
+                    similarity = np.dot(query_embedding, chunk_embedding)
+                    similarities.append((similarity, chunk_id, chunk))
+            
+            # Sort by similarity (highest first)
+            similarities.sort(key=lambda x: x[0], reverse=True)
+            
+            # Convert to SourceReference objects
             results = []
-            for i in range(len(similarities[0])):
-                if indices[0][i] != -1:  # Valid result
-                    chunk_id = indices[0][i]
-                    similarity = float(similarities[0][i])
-                    
-                    # Convert L2 distance to similarity score (0-1)
-                    # Lower L2 distance = higher similarity
-                    similarity_score = 1.0 / (1.0 + similarity)
-                    
-                    if chunk_id in self.document_store:
-                        chunk = self.document_store[chunk_id]
-                        
-                        source_ref = SourceReference(
-                            document_id=chunk.document_id,
-                            document_name=chunk.metadata.get('filename', 'Unknown'),
-                            chunk_content=chunk.content,
-                            relevance_score=similarity_score,
-                            page_number=chunk.metadata.get('page_number'),
-                            section=chunk.metadata.get('section')
-                        )
-                        results.append(source_ref)
+            for similarity, chunk_id, chunk in similarities[:top_k]:
+                source_ref = SourceReference(
+                    document_id=chunk.document_id,
+                    document_name=chunk.metadata.get('filename', 'Unknown'),
+                    chunk_content=chunk.content,
+                    relevance_score=float(similarity),
+                    page_number=chunk.metadata.get('page_number'),
+                    section=chunk.metadata.get('section')
+                )
+                results.append(source_ref)
             
             print(f"🎯 Found {len(results)} relevant chunks")
             for i, result in enumerate(results):
@@ -201,47 +181,49 @@ class FAISSVectorService:
             return results
             
         except Exception as e:
-            print(f"❌ Error searching vector database: {str(e)}")
+            print(f"❌ Error searching chunks: {str(e)}")
             return []
     
     def get_stats(self) -> Dict[str, Any]:
         """Get vector database statistics"""
         try:
+            unique_docs = len(set(chunk.document_id for chunk in self.document_store.values()))
+            
             return {
-                "total_vectors": self.index.ntotal if self.index else 0,
-                "embedding_dimension": self.embedding_dimension,
-                "total_documents": len(set(chunk.document_id for chunk in self.document_store.values())),
+                "total_vectors": len(self.embeddings_store),
+                "embedding_dimension": self.embedding_dimension or 0,
+                "total_documents": unique_docs,
                 "total_chunks": len(self.document_store),
-                "index_type": "IndexFlatL2 (Exact Search)",
-                "status": "ready" if self.index and self.index.ntotal > 0 else "empty"
+                "index_type": "Cloud Embeddings + Cosine Similarity",
+                "status": "ready" if self.document_store else "empty"
             }
         except Exception as e:
-            return {"error": str(e)}
+            return {"error": str(e), "status": "error"}
     
     def remove_document(self, document_id: str) -> bool:
         """Remove all chunks for a specific document"""
         try:
-            # Find chunks for this document
-            chunks_to_remove = [
-                chunk_id for chunk_id, chunk in self.document_store.items() 
-                if chunk.document_id == document_id
-            ]
+            # Find chunks to remove
+            chunks_to_remove = []
+            for chunk_id, chunk in self.document_store.items():
+                if chunk.document_id == document_id:
+                    chunks_to_remove.append(chunk_id)
             
             if not chunks_to_remove:
                 print(f"⚠️ No chunks found for document {document_id}")
                 return False
             
-            # Remove from document store
+            # Remove chunks and embeddings
             for chunk_id in chunks_to_remove:
-                del self.document_store[chunk_id]
+                if chunk_id in self.document_store:
+                    del self.document_store[chunk_id]
+                if chunk_id in self.embeddings_store:
+                    del self.embeddings_store[chunk_id]
             
-            # Note: FAISS doesn't support easy removal of specific vectors
-            # For now, we'll rebuild the index without these chunks
+            # Save updated data
+            self._save_data()
+            
             print(f"🗑️ Removed {len(chunks_to_remove)} chunks for document {document_id}")
-            
-            # Save updated metadata
-            self._save_index()
-            
             return True
             
         except Exception as e:
@@ -249,18 +231,27 @@ class FAISSVectorService:
             return False
     
     def clear_all(self) -> bool:
-        """Clear all vectors and documents"""
+        """Clear all documents and vectors"""
         try:
-            self._create_new_index()
             self.document_store.clear()
-            self._save_index()
+            self.embeddings_store.clear()
+            self.embedding_dimension = None
+            
+            # Save empty state
+            self._save_data()
+            
             print("🗑️ Cleared all vectors and documents")
             return True
+            
         except Exception as e:
             print(f"❌ Error clearing database: {str(e)}")
             return False
+    
+    def is_ready(self) -> bool:
+        """Check if vector service is ready"""
+        return True  # Always ready
 
 # Global vector service instance
-print("🚀 Creating FAISS vector service...")
-vector_service = FAISSVectorService()
+print("🚀 Creating cloud vector service...")
+vector_service = CloudVectorService()
 print("✅ Vector service ready!")

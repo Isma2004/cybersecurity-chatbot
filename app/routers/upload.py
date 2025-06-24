@@ -39,6 +39,9 @@ async def process_document_background(document_id: str, file_path: str, filename
         # Create chunks
         chunks = document_processor.create_chunks(extracted_text, document_id, filename)
         
+        if not chunks:
+            raise Exception("Aucun chunk créé - le document pourrait être vide")
+        
         # Add to vector database
         success = vector_service.add_document_chunks(chunks)
         
@@ -53,9 +56,9 @@ async def process_document_background(document_id: str, file_path: str, filename
                     'processing_complete': True
                 }
             }
-            print(f"✅ Successfully processed {filename}")
+            print(f"✅ Successfully processed {filename} - {len(chunks)} chunks created")
         else:
-            raise Exception("Failed to add chunks to vector database")
+            raise Exception("Échec de l'ajout des chunks à la base de données vectorielle")
             
     except Exception as e:
         print(f"❌ Error processing {filename}: {str(e)}")
@@ -64,6 +67,14 @@ async def process_document_background(document_id: str, file_path: str, filename
             'message': f'Erreur de traitement: {str(e)}',
             'error': str(e)
         }
+    finally:
+        # Clean up the uploaded file
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+                print(f"🗑️ Cleaned up temporary file: {file_path}")
+        except Exception as cleanup_error:
+            print(f"⚠️ Error cleaning up file {file_path}: {cleanup_error}")
 
 @router.post("/upload", response_model=DocumentResponse)
 async def upload_document(
@@ -73,7 +84,7 @@ async def upload_document(
     """
     Upload and process a cybersecurity document
     
-    Supports: PDF, DOCX, TXT, and images (PNG, JPG, JPEG)
+    Supports: PDF, DOCX, TXT, and images (PNG, JPG, JPEG) with French OCR
     """
     try:
         # Validate file
@@ -87,11 +98,13 @@ async def upload_document(
                 detail=f"Type de fichier non supporté. Extensions autorisées: {', '.join(settings.allowed_extensions)}"
             )
         
-        # Check file size
+        # Check file size by reading content
         content = await file.read()
+        await file.seek(0)  # Reset file pointer
+        
         if len(content) > settings.max_file_size:
             raise HTTPException(
-                status_code=400,
+                status_code=413,
                 detail=f"Fichier trop volumineux. Taille maximum: {settings.max_file_size // (1024*1024)} MB"
             )
         
@@ -100,10 +113,17 @@ async def upload_document(
         
         # Save file to disk
         file_extension = Path(file.filename).suffix
-        file_path = os.path.join(settings.upload_dir, f"{document_id}{file_extension}")
+        safe_filename = f"{document_id}{file_extension}"
+        file_path = os.path.join(settings.upload_dir, safe_filename)
         
+        # Ensure upload directory exists
+        os.makedirs(settings.upload_dir, exist_ok=True)
+        
+        # Write file content
         with open(file_path, "wb") as f:
             f.write(content)
+        
+        print(f"📁 Saved file to: {file_path}")
         
         # Create initial metadata
         file_type = document_processor.detect_file_type(file.filename)
@@ -170,8 +190,15 @@ async def get_supported_file_types():
             "pdf": "Documents PDF",
             "docx": "Documents Word", 
             "txt": "Fichiers texte",
-            "png": "Images PNG (OCR)",
-            "jpg": "Images JPEG (OCR)",
-            "jpeg": "Images JPEG (OCR)"
-        }
+            "png": "Images PNG (OCR français)",
+            "jpg": "Images JPEG (OCR français)",
+            "jpeg": "Images JPEG (OCR français)"
+        },
+        "features": [
+            "Traitement de texte français optimisé",
+            "OCR pour images avec support français/anglais",
+            "Chunking intelligent pour documents de cybersécurité",
+            "Support des tableaux Word",
+            "Extraction de texte multi-pages PDF"
+        ]
     }

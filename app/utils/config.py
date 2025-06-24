@@ -1,86 +1,76 @@
+"""
+Configuration settings for the application
+"""
 import os
-from pathlib import Path
-from typing import List
 from pydantic_settings import BaseSettings
-from dotenv import load_dotenv
-
-# Load environment variables
-load_dotenv()
+from pydantic import Field
+from typing import List
 
 class Settings(BaseSettings):
-    # Application
-    app_name: str = "Assistant IA Cybersécurité"
-    app_version: str = "1.0.0"
-    debug: bool = True
+    """Application settings with proper field definitions"""
+    
+    # Paths
+    upload_dir: str = Field(default="./uploads")
+    vector_db_path: str = Field(default="./data/vector_store")
+    
+    # File upload settings
+    max_file_size: int = Field(default=10 * 1024 * 1024)  # 10MB
+    allowed_extensions: List[str] = Field(default=["pdf", "docx", "doc", "txt", "png", "jpg", "jpeg"])
+    
+    # Text processing
+    chunk_size: int = Field(default=800)
+    chunk_overlap: int = Field(default=150)
+    
+    # Embedding model
+    embedding_model: str = Field(default="intfloat/multilingual-e5-base")
+    
+    # RAG settings
+    top_k_retrieval: int = Field(default=3)
+    max_tokens_generation: int = Field(default=512)
+    
+    # OpenAI Configuration
+    use_openai: bool = Field(default=False)
+    openai_api_key: str = Field(default="")
+    openai_model: str = Field(default="gpt-3.5-turbo")
+    
+    # Kaggle Configuration
+    use_kaggle: bool = Field(default=False)
+    kaggle_api_url: str = Field(default="")
+    kaggle_api_key: str = Field(default="")
+    
+    # For local LLM (if needed)
+    ollama_base_url: str = Field(default="http://localhost:11434")
+    ollama_model: str = Field(default="llama2")
+    
+    class Config:
+        env_file = ".env"
+        env_file_encoding = "utf-8"
+        case_sensitive = False
+        # Allow extra fields from .env that aren't defined
+        extra = "ignore"
 
-    use_openai: bool = os.getenv("USE_OPENAI", "true").lower() == "true"
-    openai_api_key: str = os.getenv("OPENAI_API_KEY", "")
-    openai_model: str = os.getenv("OPENAI_MODEL", "gpt-3.5-turbo")
-    
-    # Server
-    host: str = "0.0.0.0"
-    port: int = 8000
-    
-    # CORS
-    cors_origins: List[str] = ["http://localhost:3000", "http://localhost:5173"]
-    
-    # File Upload
-    max_file_size: int = 5 * 1024 * 1024  # 50MB
-    allowed_extensions: List[str] = ["pdf", "docx", "txt", "png", "jpg", "jpeg"]
-    upload_dir: str = "./data/documents"
-    
-    # Vector Database
-    vector_store_path: str = "./data/vector_store"
-    faiss_index_path: str = "./data/vector_store/faiss_index"
-    
-    # French Language Models
-    embedding_model: str = "intfloat/multilingual-e5-large"
-    language_model: str = "microsoft/Phi-3-mini-4k-instruct"
-    
-    # RAG Settings
-    chunk_size: int = 800
-    chunk_overlap: int = 150
-    top_k_retrieval: int = 3
-    max_tokens_generation: int = 512
-    
-    # Logging
-    log_level: str = "INFO"
-    
-    def __init__(self, **kwargs):
-        super().__init__(**kwargs)
-        # Create directories if they don't exist
-        Path(self.upload_dir).mkdir(parents=True, exist_ok=True)
-        Path(self.vector_store_path).mkdir(parents=True, exist_ok=True)
-
-# Global settings instance
-settings = Settings()
-
-# French system prompts for cybersecurity
+# French system prompts for better responses
 FRENCH_SYSTEM_PROMPTS = {
-    "cybersecurity": """
-    Vous êtes un assistant IA spécialisé en cybersécurité et conformité ISO 27001.
-    Répondez toujours en français professionnel et précis.
-    Basez vos réponses uniquement sur les documents fournis dans le contexte.
-    Citez les sections pertinentes avec précision.
-    Si l'information n'est pas disponible dans le contexte, dites-le clairement.
-    """,
-    
-    "document_analysis": """
-    Analysez les documents de conformité et répondez aux questions sur :
-    - Les politiques de sécurité de l'information
-    - Les procédures ISO 27001
-    - Les guides de cybersécurité
-    - Les contrôles de sécurité
-    - Les mesures de protection des données
-    """
+    "cybersecurity": """Tu es un assistant expert en cybersécurité et conformité ISO 27001.
+
+Règles importantes:
+1. Réponds TOUJOURS en français professionnel
+2. Base tes réponses UNIQUEMENT sur le contexte fourni
+3. Si l'information n'est pas dans le contexte, dis-le clairement
+4. Cite le document source quand c'est pertinent
+5. Sois précis et concis"""
 }
 
-# ISO 27001 specific patterns for better French document chunking
-ISO_27001_PATTERNS = [
-    r'\n(?:Annexe|Annex)\s+[A-Z][\.\s]',
-    r'\n(?:Contrôle|Control)\s+[A-Z]\.\d+',
-    r'\n\d+\.\d+\s+',
-    r'\n(?:Article|Section)\s+\d+',
-    r'\n(?:Politique|Policy)\s+',
-    r'\n(?:Procédure|Procedure)\s+',
-]
+# Initialize settings
+settings = Settings()
+
+# Create necessary directories
+os.makedirs(settings.upload_dir, exist_ok=True)
+os.makedirs(settings.vector_db_path, exist_ok=True)
+
+# Print configuration summary
+print(f"⚙️ Configuration loaded:")
+print(f"   📁 Upload dir: {settings.upload_dir}")
+print(f"   🧮 Embedding model: {settings.embedding_model}")
+print(f"   📊 Chunk size: {settings.chunk_size}")
+print(f"   🎯 Top-K retrieval: {settings.top_k_retrieval}")
