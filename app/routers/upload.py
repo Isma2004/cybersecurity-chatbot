@@ -2,7 +2,7 @@ import os
 import uuid
 import asyncio
 from pathlib import Path
-from typing import List
+from typing import List, Optional
 from fastapi import APIRouter, UploadFile, File, HTTPException, BackgroundTasks
 from datetime import datetime
 
@@ -10,16 +10,37 @@ from app.models.schemas import DocumentResponse, DocumentMetadata, ProcessingSta
 from app.services.document_processor import document_processor
 from app.services.vector_service import vector_service
 from app.utils.config import settings
+from fastapi import Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from app.models.schemas import DocumentOwnership
+from app.services.auth_service import auth_service
 
 router = APIRouter()
+security = HTTPBearer(auto_error=False)
 
 # Store for tracking document processing status
 processing_status: dict = {}
 
-async def process_document_background(document_id: str, file_path: str, filename: str):
+def get_storage_directory(ownership: DocumentOwnership) -> str:
+    """Get the appropriate storage directory based on ownership"""
+    if ownership == DocumentOwnership.GLOBAL:
+        return settings.global_docs_dir
+    elif ownership == DocumentOwnership.PERSONAL:
+        return settings.personal_docs_dir
+    else:
+        return settings.upload_dir
+
+async def process_document_background(
+    document_id: str, 
+    file_path: str, 
+    filename: str,
+    ownership: DocumentOwnership = DocumentOwnership.PERSONAL,
+    session_id: Optional[str] = None,
+    username: str = "anonymous"
+):
     """Background task to process uploaded document"""
     try:
-        print(f"🔄 Starting background processing for {filename}")
+        print(f"🔄 Processing {filename} ({ownership.value} document)")
         
         # Update status to processing
         processing_status[document_id] = {
@@ -39,26 +60,60 @@ async def process_document_background(document_id: str, file_path: str, filename
         # Create chunks
         chunks = document_processor.create_chunks(extracted_text, document_id, filename)
         
-        if not chunks:
-            raise Exception("Aucun chunk créé - le document pourrait être vide")
+        # Add metadata to chunks
+        for chunk in chunks:
+            chunk.metadata.update({
+                "ownership": ownership,
+                "uploaded_by": username,
+                "session_id": session_id,
+                "upload_date": datetime.now().isoformat(),
+                "filename": filename,  # Original filename
+                "file_extension": Path(filename).suffix  # Store file extension for deletion
+            })
         
-        # Add to vector database
-        success = vector_service.add_document_chunks(chunks)
+        # Add to vector database with ownership
+        if ownership == DocumentOwnership.PERSONAL and session_id:
+            success = vector_service.add_document_chunks(
+                chunks, 
+                ownership=ownership,
+                session_id=session_id
+            )
+        elif ownership == DocumentOwnership.GLOBAL:
+            success = vector_service.add_document_chunks(
+                chunks,
+                ownership=ownership
+            )
+        else:
+            # Backward compatibility - add normally
+            success = vector_service.add_document_chunks(chunks)
         
         if success:
-            # Update final status
+            # Move file to permanent storage instead of deleting
+            permanent_dir = get_storage_directory(ownership)
+            os.makedirs(permanent_dir, exist_ok=True)
+            
+            file_extension = Path(filename).suffix
+            permanent_filename = f"{document_id}{file_extension}"
+            permanent_path = os.path.join(permanent_dir, permanent_filename)
+            
+            # Move file to permanent location
+            if os.path.exists(file_path) and file_path != permanent_path:
+                os.rename(file_path, permanent_path)
+                print(f"📁 Moved file to permanent storage: {permanent_path}")
+            
             processing_status[document_id] = {
                 'status': ProcessingStatus.READY,
                 'message': 'Document traité avec succès',
                 'metadata': {
-                    **metadata,
-                    'chunk_count': len(chunks),
-                    'processing_complete': True
+                    'text_length': len(extracted_text),
+                    'chunks_created': len(chunks),
+                    'ownership': ownership.value,
+                    'stored_at': permanent_path
                 }
             }
-            print(f"✅ Successfully processed {filename} - {len(chunks)} chunks created")
+            print(f"✅ Successfully processed {filename}")
         else:
-            raise Exception("Échec de l'ajout des chunks à la base de données vectorielle")
+            raise Exception("Failed to add chunks to vector database")
             
     except Exception as e:
         print(f"❌ Error processing {filename}: {str(e)}")
@@ -67,26 +122,43 @@ async def process_document_background(document_id: str, file_path: str, filename
             'message': f'Erreur de traitement: {str(e)}',
             'error': str(e)
         }
-    finally:
-        # Clean up the uploaded file
+        
+        # Clean up the uploaded file only on error
         try:
             if os.path.exists(file_path):
                 os.remove(file_path)
-                print(f"🗑️ Cleaned up temporary file: {file_path}")
+                print(f"🗑️ Cleaned up temporary file after error: {file_path}")
         except Exception as cleanup_error:
             print(f"⚠️ Error cleaning up file {file_path}: {cleanup_error}")
 
 @router.post("/upload", response_model=DocumentResponse)
 async def upload_document(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
 ):
     """
-    Upload and process a cybersecurity document
-    
-    Supports: PDF, DOCX, TXT, and images (PNG, JPG, JPEG) with French OCR
+    Upload and process a document
+    - With auth: Document is personal (session-based)
+    - Without auth: Document is stored normally (backward compatibility)
     """
     try:
+        # Check authentication
+        session_id = None
+        username = "anonymous"
+        ownership = DocumentOwnership.PERSONAL  # Default for backward compatibility
+        
+        if credentials:
+            token = credentials.credentials
+            payload = auth_service.verify_token(token)
+            if payload:
+                session_id = payload.get("session_id")
+                username = payload.get("sub")
+                ownership = DocumentOwnership.PERSONAL
+                print(f"👤 Authenticated upload by {username} (session: {session_id[:8] if session_id else 'None'})")
+        else:
+            print("👤 Anonymous upload (backward compatibility)")
+
         # Validate file
         if not file.filename:
             raise HTTPException(status_code=400, detail="Nom de fichier manquant")
@@ -109,21 +181,32 @@ async def upload_document(
             )
         
         # Generate unique document ID
-        document_id = f"doc_{uuid.uuid4().hex[:8]}"
+        if ownership == DocumentOwnership.PERSONAL and session_id:
+            document_id = f"personal_{session_id[:8]}_{uuid.uuid4().hex[:8]}"
+        else:
+            document_id = f"doc_{uuid.uuid4().hex[:8]}"
         
-        # Save file to disk
+        # Determine storage directory
+        if ownership == DocumentOwnership.PERSONAL and session_id:
+            storage_dir = settings.personal_docs_dir
+        else:
+            storage_dir = settings.upload_dir  # Temporary storage for processing
+        
+        # Ensure storage directory exists
+        os.makedirs(storage_dir, exist_ok=True)
+        
+        # Save file to temporary/processing location
         file_extension = Path(file.filename).suffix
         safe_filename = f"{document_id}{file_extension}"
-        file_path = os.path.join(settings.upload_dir, safe_filename)
-        
-        # Ensure upload directory exists
-        os.makedirs(settings.upload_dir, exist_ok=True)
+        file_path = os.path.join(storage_dir, safe_filename)
         
         # Write file content
         with open(file_path, "wb") as f:
             f.write(content)
         
         print(f"📁 Saved file to: {file_path}")
+        print(f"📊 File size: {len(content)} bytes")
+        print(f"🏷️ Ownership: {ownership.value}")
         
         # Create initial metadata
         file_type = document_processor.detect_file_type(file.filename)
@@ -138,7 +221,13 @@ async def upload_document(
         # Initialize processing status
         processing_status[document_id] = {
             'status': ProcessingStatus.PROCESSING,
-            'message': 'Fichier téléchargé, traitement en cours...'
+            'message': 'Fichier téléchargé, traitement en cours...',
+            'metadata': {
+                'filename': file.filename,
+                'file_size': len(content),
+                'ownership': ownership.value,
+                'uploaded_by': username
+            }
         }
         
         # Start background processing
@@ -146,15 +235,20 @@ async def upload_document(
             process_document_background,
             document_id,
             file_path,
-            file.filename
+            file.filename,
+            ownership,
+            session_id,
+            username
         )
         
-        print(f"📁 Uploaded {file.filename} → Document ID: {document_id}")
+        response_message = f"Document '{file.filename}' téléchargé avec succès. Traitement en cours..."
+        if ownership == DocumentOwnership.PERSONAL and session_id:
+            response_message += f" (Document personnel - Session: {session_id[:8]})"
         
         return DocumentResponse(
             document_id=document_id,
             metadata=metadata,
-            message=f"Document '{file.filename}' téléchargé avec succès. Traitement en cours..."
+            message=response_message
         )
         
     except HTTPException:
@@ -199,6 +293,58 @@ async def get_supported_file_types():
             "OCR pour images avec support français/anglais",
             "Chunking intelligent pour documents de cybersécurité",
             "Support des tableaux Word",
-            "Extraction de texte multi-pages PDF"
+            "Extraction de texte multi-pages PDF",
+            "Support multi-tenant (documents personnels et globaux)"
         ]
     }
+
+@router.post("/test-upload-simple")
+async def test_upload_simple(file: UploadFile = File(...)):
+    """Minimal test endpoint"""
+    try:
+        content = await file.read()
+        return {
+            "status": "received",
+            "filename": file.filename,
+            "size": len(content),
+            "content_type": file.content_type,
+            "is_supported": document_processor.is_supported_file(file.filename) if file.filename else False
+        }
+    except Exception as e:
+        return {
+            "status": "error",
+            "error": str(e)
+        }
+
+@router.get("/upload/directories")
+async def get_upload_directories():
+    """Debug endpoint to check directory structure"""
+    try:
+        directories = {
+            "upload_dir": {
+                "path": settings.upload_dir,
+                "exists": os.path.exists(settings.upload_dir),
+                "files": os.listdir(settings.upload_dir) if os.path.exists(settings.upload_dir) else []
+            },
+            "global_docs_dir": {
+                "path": settings.global_docs_dir,
+                "exists": os.path.exists(settings.global_docs_dir),
+                "files": os.listdir(settings.global_docs_dir) if os.path.exists(settings.global_docs_dir) else []
+            },
+            "personal_docs_dir": {
+                "path": settings.personal_docs_dir,
+                "exists": os.path.exists(settings.personal_docs_dir),
+                "files": os.listdir(settings.personal_docs_dir) if os.path.exists(settings.personal_docs_dir) else []
+            }
+        }
+        
+        return {
+            "directories": directories,
+            "current_working_directory": os.getcwd(),
+            "vector_service_stats": vector_service.get_stats()
+        }
+    except Exception as e:
+        return {
+            "error": str(e),
+            "current_working_directory": os.getcwd()
+        }

@@ -1,6 +1,7 @@
 # app/routers/chat_sessions.py
-from fastapi import APIRouter, HTTPException
-from typing import List
+from fastapi import APIRouter, HTTPException, Depends
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from typing import List, Optional
 
 from app.models.schemas import (
     ChatSession, ChatMessageRequest, CreateChatRequest, 
@@ -9,8 +10,10 @@ from app.models.schemas import (
 from app.services.chat_session_service import chat_session_service
 from app.services.chat_service import chat_service
 from app.services.vector_service import vector_service
+from app.services.auth_service import auth_service
 
 router = APIRouter()
+security = HTTPBearer(auto_error=False)
 
 @router.get("/chats", response_model=ChatListResponse)
 async def get_chat_sessions():
@@ -54,9 +57,22 @@ async def get_chat_session(session_id: str):
         raise HTTPException(status_code=500, detail=str(e))
 
 @router.post("/chats/{session_id}/messages", response_model=ChatResponse)
-async def send_message_to_session(session_id: str, request: ChatMessageRequest):
+async def send_message_to_session(
+    session_id: str, 
+    request: ChatMessageRequest,
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(security)
+):
     """Send a message to a specific chat session"""
     try:
+        # Get authentication session ID from token
+        auth_session_id = None
+        if credentials:
+            token = credentials.credentials
+            payload = auth_service.verify_token(token)
+            if payload:
+                auth_session_id = payload.get("session_id")
+                print(f"🔐 Auth session ID: {auth_session_id[:8] if auth_session_id else 'None'}")
+        
         # Verify session exists
         session_data = chat_session_service.get_session_with_messages(session_id)
         if not session_data:
@@ -74,7 +90,8 @@ async def send_message_to_session(session_id: str, request: ChatMessageRequest):
         chat_request = ChatRequest(
             message=request.message,
             max_tokens=request.max_tokens,
-            temperature=request.temperature
+            temperature=request.temperature,
+            session_id=auth_session_id  # Pass the AUTH session_id for personal documents
         )
         
         ai_response = chat_service.chat(chat_request)
