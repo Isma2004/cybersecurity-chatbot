@@ -3,6 +3,7 @@ from typing import List, Optional, Dict, Any
 from datetime import datetime
 from enum import Enum
 
+# Define enums FIRST (before they're used)
 class FileType(str, Enum):
     PDF = "pdf"
     DOCX = "docx"
@@ -15,6 +16,15 @@ class ProcessingStatus(str, Enum):
     READY = "ready"
     ERROR = "error"
 
+class UserRole(str, Enum):
+    ADMIN = "admin"
+    EMPLOYEE = "employee"
+
+class DocumentOwnership(str, Enum):
+    GLOBAL = "global"  # Admin-uploaded, available to all
+    PERSONAL = "personal"  # User-uploaded, session-specific
+
+# Now define classes that use the enums
 class DocumentChunk(BaseModel):
     """Individual chunk of a processed document"""
     chunk_id: str
@@ -22,6 +32,8 @@ class DocumentChunk(BaseModel):
     content: str
     chunk_index: int
     metadata: Dict[str, Any] = {}
+    ownership: Optional[DocumentOwnership] = None  # Now DocumentOwnership is defined
+    session_id: Optional[str] = None
 
 class DocumentMetadata(BaseModel):
     filename: str
@@ -45,6 +57,9 @@ class ChatRequest(BaseModel):
     document_ids: Optional[List[str]] = None
     max_tokens: Optional[int] = 512
     temperature: Optional[float] = 0.7
+    session_id: Optional[str] = None  # For multi-tenant support
+    include_global: Optional[bool] = True  # Include global documents
+    include_personal: Optional[bool] = True  # Include personal documents
     
     # Support both 'message' and 'question' for flexibility
     @property
@@ -71,7 +86,6 @@ class HealthCheck(BaseModel):
     timestamp: datetime
     version: str
     models_loaded: Dict[str, bool]
-
 
 class ChatSession(BaseModel):
     """Chat session model"""
