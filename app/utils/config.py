@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # Paths
     upload_dir: str = Field(default="./uploads")
     vector_db_path: str = Field(default="./data/vector_store")
+    documents_dir: str = Field(default="./data/documents")  # ADD THIS
+    global_docs_dir: str = Field(default="./data/documents/global")  # ADD THIS
+    personal_docs_dir: str = Field(default="./data/documents/personal")  # ADD THIS
     
     # File upload settings
     max_file_size: int = Field(default=10 * 1024 * 1024)  # 10MB
@@ -67,6 +70,9 @@ settings = Settings()
 # Create necessary directories
 os.makedirs(settings.upload_dir, exist_ok=True)
 os.makedirs(settings.vector_db_path, exist_ok=True)
+os.makedirs(settings.documents_dir, exist_ok=True)  # ADD THIS
+os.makedirs(settings.global_docs_dir, exist_ok=True)  # ADD THIS
+os.makedirs(settings.personal_docs_dir, exist_ok=True)  # ADD THIS
 
 # Print configuration summary
 print(f"⚙️ Configuration loaded:")
